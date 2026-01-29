@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Generative Breakbeat × WebGPU</title>
+  <script src="https://unpkg.com/tone"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Courier New', monospace;
+      background: #000;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #e0e0e0;
+      overflow: hidden;
+    }
+
+    #webgpu-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 2rem;
+      max-width: 600px;
+      width: 100%;
+      pointer-events: none;
+    }
+
+    .container > * {
+      pointer-events: auto;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: #ff6b6b;
+      text-transform: uppercase;
+      letter-spacing: 4px;
+      text-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
+    }
+
+    .subtitle {
+      font-size: 0.75rem;
+      color: #666;
+      margin-bottom: 2rem;
+    }
+
+    #startBtn {
+      background: linear-gradient(145deg, #ff6b6b, #c44569);
+      border: none;
+      color: white;
+      padding: 1.5rem 3rem;
+      font-size: 1.2rem;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 50px;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      transition: all 0.3s ease;
+      box-shadow: 0 10px 40px rgba(255, 107, 107, 0.3);
+    }
+
+    #startBtn:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 15px 50px rgba(255, 107, 107, 0.4);
+    }
+
+    #startBtn.playing {
+      background: linear-gradient(145deg, #4ecdc4, #2d6a4f);
+      box-shadow: 0 10px 40px rgba(78, 205, 196, 0.3);
+    }
+
+    .controls {
+      display: none;
+      margin-top: 2rem;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .controls.visible {
+      display: flex;
+    }
+
+    .control-group {
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(10px);
+      padding: 1rem;
+      border-radius: 10px;
+      min-width: 120px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .control-label {
+      font-size: 0.65rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 0.5rem;
+    }
+
+    .control-value {
+      font-size: 1.5rem;
+      color: #ff6b6b;
+      font-weight: bold;
+    }
+
+    #bpmSlider {
+      width: 100%;
+      margin-top: 0.5rem;
+      accent-color: #ff6b6b;
+    }
+
+    .info {
+      margin-top: 2rem;
+      font-size: 0.7rem;
+      color: #555;
+    }
+
+    .bar-counter {
+      display: none;
+      margin-top: 1rem;
+      font-size: 0.8rem;
+      color: #666;
+      text-shadow: 0 0 10px rgba(0, 0, 0, 0.8);
+    }
+
+    .bar-counter.visible {
+      display: block;
+    }
+
+    .chord-display {
+      display: none;
+      margin-top: 1rem;
+      font-size: 1.2rem;
+      color: #4ecdc4;
+      font-weight: bold;
+      text-shadow: 0 0 20px rgba(78, 205, 196, 0.5);
+    }
+
+    .chord-display.visible {
+      display: block;
+    }
+
+    .webgpu-status {
+      position: fixed;
+      bottom: 1rem;
+      right: 1rem;
+      font-size: 0.7rem;
+      color: #666;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 0.5rem 1rem;
+      border-radius: 5px;
+      z-index: 2;
+    }
+
+    .webgpu-status.active {
+      color: #4ecdc4;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="webgpu-canvas"></canvas>
+
+  <div class="container">
+    <h1>Generative Breakbeat</h1>
+    <p class="subtitle">Evolving drum patterns × WebGPU particles</p>
+
+    <button id="startBtn">Start</button>
+
+    <div class="controls" id="controls">
+      <div class="control-group">
+        <div class="control-label">BPM</div>
+        <div class="control-value" id="bpmValue">160</div>
+        <input type="range" id="bpmSlider" min="140" max="180" value="160">
+      </div>
+      <div class="control-group">
+        <div class="control-label">Pattern</div>
+        <div class="control-value" id="patternValue">1</div>
+      </div>
+    </div>
+
+    <div class="chord-display" id="chordDisplay">Am</div>
+    <div class="bar-counter" id="barCounter">Bar: 1 | Evolution: Stable</div>
+
+    <p class="info">Patterns evolve every 4, 16, and 32 bars</p>
+  </div>
+
+  <div class="webgpu-status" id="webgpuStatus">WebGPU: Initializing...</div>
+
+  <script>
+    // ==========================================
+    // WEBGPU PARTICLE SYSTEM
+    // ==========================================
+
+    class WebGPUParticles {
+      constructor() {
+        this.canvas = document.getElementById('webgpu-canvas');
+        this.device = null;
+        this.context = null;
+        this.pipeline = null;
+        this.computePipeline = null;
+
+        // Detect Safari for performance adjustments
+        this.isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        this.particleCount = this.isSafari ? 2048 : 4096; // Fewer particles for Safari
+        this.computeInterval = this.isSafari ? 3 : 2; // Update less often on Safari
+
+        this.frameCount = 0; // For skipping compute frames
+        this.time = 0;
+        this.audioData = new Float32Array(4); // bass, mid, high, amplitude
+        this.chordHue = 0; // 0-1 for color mapping
+        this.initialized = false;
+        // Reusable uniform buffer to avoid creating new Float32Array every frame
+        this.uniformData = new Float32Array(16);
+      }
+
+      async init() {
+        if (!navigator.gpu) {
+          document.getElementById('webgpuStatus').textContent = 'WebGPU: Not supported';
+          return false;
+        }
+
+        try {
+          const adapter = await navigator.gpu.requestAdapter();
+          this.device = await adapter.requestDevice();
+          this.context = this.canvas.getContext('webgpu');
+
+          const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+          this.context.configure({
+            device: this.device,
+            format: canvasFormat,
+            alphaMode: 'premultiplied'
+          });
+
+          await this.setupPipelines();
+          this.resize();
+          window.addEventListener('resize', () => this.resize());
+
+          this.initialized = true;
+          const browserInfo = this.isSafari ? ' Safari' : '';
+          document.getElementById('webgpuStatus').textContent = `WebGPU: Active${browserInfo} (${this.particleCount} particles)`;
+          document.getElementById('webgpuStatus').classList.add('active');
+          return true;
+        } catch (e) {
+          console.error('WebGPU initialization failed:', e);
+          document.getElementById('webgpuStatus').textContent = 'WebGPU: Failed';
+          return false;
+        }
+      }
+
+      async setupPipelines() {
+        // Particle buffer: position (vec2), velocity (vec2), life (float), padding
+        const particleBufferSize = this.particleCount * 6 * 4; // 6 floats per particle
+        this.particleBuffer = this.device.createBuffer({
+          size: particleBufferSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+
+        // Initialize particles with random positions and velocities
+        const initialData = new Float32Array(this.particleCount * 6);
+        for (let i = 0; i < this.particleCount; i++) {
+          const idx = i * 6;
+          // Position (normalized -1 to 1)
+          initialData[idx + 0] = (Math.random() - 0.5) * 2;
+          initialData[idx + 1] = (Math.random() - 0.5) * 2;
+          // Velocity
+          initialData[idx + 2] = (Math.random() - 0.5) * 0.01;
+          initialData[idx + 3] = (Math.random() - 0.5) * 0.01;
+          // Life
+          initialData[idx + 4] = Math.random();
+          // Padding
+          initialData[idx + 5] = 0;
+        }
+        this.device.queue.writeBuffer(this.particleBuffer, 0, initialData);
+
+        // Uniform buffer for simulation parameters
+        this.uniformBuffer = this.device.createBuffer({
+          size: 64, // 16 floats
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+
+        // Compute shader for particle simulation
+        const computeShader = `
+          struct Particle {
+            position: vec2f,
+            velocity: vec2f,
+            life: f32,
+            padding: f32,
+          }
+
+          struct Uniforms {
+            time: f32,
+            deltaTime: f32,
+            bassEnergy: f32,
+            midEnergy: f32,
+            highEnergy: f32,
+            amplitude: f32,
+            chordHue: f32,
+            aspectRatio: f32,
+          }
+
+          @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+          @group(0) @binding(1) var<uniform> uniforms: Uniforms;
+
+          // Simplex-like noise approximation
+          fn hash(p: vec2f) -> f32 {
+            let p3 = fract(vec3f(p.xyx) * 0.1031);
+            let p4 = p3 + dot(p3, vec3f(p3.y, p3.z, p3.x) + 33.33);
+            return fract((p4.x + p4.y) * p4.z);
+          }
+
+          fn noise(p: vec2f) -> f32 {
+            let i = floor(p);
+            let f = fract(p);
+            let u = f * f * (3.0 - 2.0 * f);
+
+            let a = hash(i);
+            let b = hash(i + vec2f(1.0, 0.0));
+            let c = hash(i + vec2f(0.0, 1.0));
+            let d = hash(i + vec2f(1.0, 1.0));
+
+            return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+          }
+
+          @compute @workgroup_size(64)
+          fn main(@builtin(global_invocation_id) global_id: vec3u) {
+            let index = global_id.x;
+            if (index >= arrayLength(&particles)) {
+              return;
+            }
+
+            var particle = particles[index];
+
+            // Simplified hash-based drift (more efficient than noise)
+            let drift = vec2f(
+              hash(particle.position + uniforms.time * 0.1) - 0.5,
+              hash(particle.position.yx + uniforms.time * 0.1 + 1.0) - 0.5
+            ) * 0.0003;
+
+            // Bass: single attractor (optimized from 3 attractors)
+            let attractor = vec2f(
+              sin(uniforms.time * 0.5) * 0.5,
+              cos(uniforms.time * 0.3) * 0.5
+            );
+            let toAttractor = attractor - particle.position;
+            let dist = length(toAttractor);
+            var bassForce = vec2f(0.0, 0.0);
+            if (dist > 0.01) {
+              bassForce = normalize(toAttractor) * uniforms.bassEnergy * 0.001 / (dist + 0.1);
+            }
+
+            // Mid frequencies: turbulence
+            let turbulence = vec2f(
+              sin(particle.position.x * 10.0 + uniforms.time * 2.0),
+              cos(particle.position.y * 10.0 + uniforms.time * 2.0)
+            ) * uniforms.midEnergy * 0.0008;
+
+            // High frequencies: scatter/sparkle
+            let scatter = vec2f(
+              hash(particle.position + uniforms.time) - 0.5,
+              hash(particle.position.yx + uniforms.time + 1.0) - 0.5
+            ) * uniforms.highEnergy * 0.002;
+
+            // Combine forces
+            let totalForce = drift + bassForce + turbulence + scatter;
+
+            // Update velocity with damping
+            particle.velocity = (particle.velocity + totalForce) * 0.98;
+
+            // Update position
+            particle.position += particle.velocity;
+
+            // Wrap around edges (toroidal space)
+            if (particle.position.x < -1.0) { particle.position.x += 2.0; }
+            if (particle.position.x > 1.0) { particle.position.x -= 2.0; }
+            if (particle.position.y < -1.0) { particle.position.y += 2.0; }
+            if (particle.position.y > 1.0) { particle.position.y -= 2.0; }
+
+            // Life cycle (slow evolution)
+            particle.life += uniforms.deltaTime * 0.1;
+            if (particle.life > 1.0) {
+              particle.life = 0.0;
+              // Respawn with gentle reset
+              let speed = length(particle.velocity);
+              if (speed < 0.001) {
+                particle.velocity = vec2f(
+                  (hash(vec2f(f32(index), uniforms.time)) - 0.5) * 0.01,
+                  (hash(vec2f(f32(index) + 1000.0, uniforms.time)) - 0.5) * 0.01
+                );
+              }
+            }
+
+            particles[index] = particle;
+          }
+        `;
+
+        // Render shader
+        const renderShader = `
+          struct Particle {
+            position: vec2f,
+            velocity: vec2f,
+            life: f32,
+            padding: f32,
+          }
+
+          struct Uniforms {
+            time: f32,
+            deltaTime: f32,
+            bassEnergy: f32,
+            midEnergy: f32,
+            highEnergy: f32,
+            amplitude: f32,
+            chordHue: f32,
+            aspectRatio: f32,
+          }
+
+          @group(0) @binding(0) var<storage, read> particles: array<Particle>;
+          @group(0) @binding(1) var<uniform> uniforms: Uniforms;
+
+          struct VertexOutput {
+            @builtin(position) position: vec4f,
+            @location(0) color: vec4f,
+            @location(1) pointCoord: vec2f,
+          }
+
+          @vertex
+          fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+            let particleIndex = vertexIndex / 6u;
+            let vertexInQuad = vertexIndex % 6u;
+
+            var particle = particles[particleIndex];
+
+            // Quad vertices (two triangles)
+            var quadOffsets = array<vec2f, 6>(
+              vec2f(-1.0, -1.0),
+              vec2f(1.0, -1.0),
+              vec2f(1.0, 1.0),
+              vec2f(-1.0, -1.0),
+              vec2f(1.0, 1.0),
+              vec2f(-1.0, 1.0)
+            );
+
+            let offset = quadOffsets[vertexInQuad];
+
+            // Particle size based on velocity and audio
+            let speed = length(particle.velocity);
+            let baseSize = 0.003;
+            let velocitySize = speed * 20.0;
+            let audioSize = uniforms.amplitude * 0.002;
+            let size = baseSize + velocitySize + audioSize;
+
+            // Apply aspect ratio correction
+            var aspectOffset = offset * size;
+            aspectOffset.x /= uniforms.aspectRatio;
+
+            var output: VertexOutput;
+            output.position = vec4f(particle.position + aspectOffset, 0.0, 1.0);
+            output.pointCoord = offset;
+
+            // Color based on velocity, frequency, and chord
+            let speedColor = speed * 50.0;
+
+            // HSV to RGB conversion for chord-based coloring
+            let hue = uniforms.chordHue + speedColor * 0.2;
+            let saturation = 0.6 + uniforms.midEnergy * 0.3;
+            let value = 0.5 + uniforms.amplitude * 0.5;
+
+            let c = value * saturation;
+            let x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0));
+            let m = value - c;
+
+            var rgb: vec3f;
+            let h6 = hue * 6.0;
+            if (h6 < 1.0) { rgb = vec3f(c, x, 0.0); }
+            else if (h6 < 2.0) { rgb = vec3f(x, c, 0.0); }
+            else if (h6 < 3.0) { rgb = vec3f(0.0, c, x); }
+            else if (h6 < 4.0) { rgb = vec3f(0.0, x, c); }
+            else if (h6 < 5.0) { rgb = vec3f(x, 0.0, c); }
+            else { rgb = vec3f(c, 0.0, x); }
+            rgb += vec3f(m);
+
+            // Add frequency-based color shifts
+            rgb.r += uniforms.bassEnergy * 0.3;
+            rgb.g += uniforms.midEnergy * 0.2;
+            rgb.b += uniforms.highEnergy * 0.4;
+
+            let alpha = 0.3 + uniforms.amplitude * 0.4;
+            output.color = vec4f(rgb, alpha);
+
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+            // Soft circular particle
+            let dist = length(input.pointCoord);
+            let alpha = smoothstep(1.0, 0.3, dist);
+
+            return vec4f(input.color.rgb, input.color.a * alpha);
+          }
+        `;
+
+        // Create compute pipeline
+        const computeShaderModule = this.device.createShaderModule({
+          code: computeShader
+        });
+
+        const computeBindGroupLayout = this.device.createBindGroupLayout({
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: { type: 'storage' }
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: { type: 'uniform' }
+            }
+          ]
+        });
+
+        this.computePipeline = this.device.createComputePipeline({
+          layout: this.device.createPipelineLayout({
+            bindGroupLayouts: [computeBindGroupLayout]
+          }),
+          compute: {
+            module: computeShaderModule,
+            entryPoint: 'main'
+          }
+        });
+
+        this.computeBindGroup = this.device.createBindGroup({
+          layout: computeBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.particleBuffer } },
+            { binding: 1, resource: { buffer: this.uniformBuffer } }
+          ]
+        });
+
+        // Create render pipeline
+        const renderShaderModule = this.device.createShaderModule({
+          code: renderShader
+        });
+
+        const renderBindGroupLayout = this.device.createBindGroupLayout({
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.VERTEX,
+              buffer: { type: 'read-only-storage' }
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+              buffer: { type: 'uniform' }
+            }
+          ]
+        });
+
+        this.pipeline = this.device.createRenderPipeline({
+          layout: this.device.createPipelineLayout({
+            bindGroupLayouts: [renderBindGroupLayout]
+          }),
+          vertex: {
+            module: renderShaderModule,
+            entryPoint: 'vertexMain'
+          },
+          fragment: {
+            module: renderShaderModule,
+            entryPoint: 'fragmentMain',
+            targets: [{
+              format: navigator.gpu.getPreferredCanvasFormat(),
+              blend: {
+                color: {
+                  srcFactor: 'src-alpha',
+                  dstFactor: 'one', // Additive blending
+                  operation: 'add'
+                },
+                alpha: {
+                  srcFactor: 'one',
+                  dstFactor: 'one',
+                  operation: 'add'
+                }
+              }
+            }]
+          },
+          primitive: {
+            topology: 'triangle-list'
+          }
+        });
+
+        this.renderBindGroup = this.device.createBindGroup({
+          layout: renderBindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.particleBuffer } },
+            { binding: 1, resource: { buffer: this.uniformBuffer } }
+          ]
+        });
+      }
+
+      resize() {
+        this.canvas.width = window.innerWidth * devicePixelRatio;
+        this.canvas.height = window.innerHeight * devicePixelRatio;
+        this.canvas.style.width = window.innerWidth + 'px';
+        this.canvas.style.height = window.innerHeight + 'px';
+      }
+
+      updateAudioData(bass, mid, high, amplitude) {
+        this.audioData[0] = bass;
+        this.audioData[1] = mid;
+        this.audioData[2] = high;
+        this.audioData[3] = amplitude;
+      }
+
+      setChordHue(hue) {
+        this.chordHue = hue;
+      }
+
+      render(deltaTime) {
+        if (!this.initialized) return;
+
+        this.time += deltaTime;
+        this.frameCount++;
+
+        // Update uniforms (reuse buffer to avoid GC)
+        const aspectRatio = this.canvas.width / this.canvas.height;
+        this.uniformData[0] = this.time;
+        this.uniformData[1] = deltaTime;
+        this.uniformData[2] = this.audioData[0]; // bass
+        this.uniformData[3] = this.audioData[1]; // mid
+        this.uniformData[4] = this.audioData[2]; // high
+        this.uniformData[5] = this.audioData[3]; // amplitude
+        this.uniformData[6] = this.chordHue;
+        this.uniformData[7] = aspectRatio;
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
+
+        // Compute pass (skip frames based on browser)
+        if (this.frameCount % this.computeInterval === 0) {
+          const computeEncoder = this.device.createCommandEncoder();
+          const computePass = computeEncoder.beginComputePass();
+          computePass.setPipeline(this.computePipeline);
+          computePass.setBindGroup(0, this.computeBindGroup);
+          const workgroupCount = Math.ceil(this.particleCount / 64);
+          computePass.dispatchWorkgroups(workgroupCount);
+          computePass.end();
+          this.device.queue.submit([computeEncoder.finish()]);
+        }
+
+        // Render pass
+        const commandEncoder = this.device.createCommandEncoder();
+        const textureView = this.context.getCurrentTexture().createView();
+
+        const renderPass = commandEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: textureView,
+            clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store'
+          }]
+        });
+
+        renderPass.setPipeline(this.pipeline);
+        renderPass.setBindGroup(0, this.renderBindGroup);
+        renderPass.draw(this.particleCount * 6); // 6 vertices per particle (2 triangles)
+        renderPass.end();
+
+        this.device.queue.submit([commandEncoder.finish()]);
+      }
+    }
+
+    // ==========================================
+    // GENERATIVE BREAKBEAT ENGINE
+    // ==========================================
+
+    let isPlaying = false;
+    let barCount = 0;
+    let sixteenthCount = 0;
+    let patternVersion = 1;
+
+    // Chord progression (Am - F - C - G)
+    const chordProgression = [
+      { name: 'Am', notes: ['A2', 'C3', 'E3'], bass: 'A1', hue: 0.75 }, // Purple-blue
+      { name: 'F', notes: ['F2', 'A2', 'C3'], bass: 'F1', hue: 0.05 },  // Orange
+      { name: 'C', notes: ['C2', 'E2', 'G2'], bass: 'C1', hue: 0.55 },  // Cyan
+      { name: 'G', notes: ['G2', 'B2', 'D3'], bass: 'G1', hue: 0.35 }   // Green
+    ];
+    let currentChordIndex = 0;
+
+    // ==========================================
+    // EFFECTS CHAIN + AUDIO ANALYSIS
+    // ==========================================
+
+    // Master effects
+    const masterCompressor = new Tone.Compressor({
+      threshold: -20,
+      ratio: 4,
+      attack: 0.003,
+      release: 0.25
+    }).toDestination();
+
+    const masterReverb = new Tone.Reverb({
+      decay: 1.5,
+      wet: 0.15
+    }).connect(masterCompressor);
+
+    // Analyser for WebGPU visualization
+    const analyser = new Tone.Analyser('fft', 512);
+    masterReverb.connect(analyser);
+
+    const waveformAnalyser = new Tone.Analyser('waveform', 512);
+    masterReverb.connect(waveformAnalyser);
+
+    // Drum bus
+    const drumBus = new Tone.Channel({ volume: -3 }).connect(masterReverb);
+    const drumCompressor = new Tone.Compressor({
+      threshold: -15,
+      ratio: 3,
+      attack: 0.001,
+      release: 0.1
+    }).connect(drumBus);
+
+    // ==========================================
+    // DRUM SYNTHESIZERS
+    // ==========================================
+
+    // Kick drum
+    const kick = new Tone.MembraneSynth({
+      pitchDecay: 0.05,
+      octaves: 6,
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.4,
+        sustain: 0.01,
+        release: 0.4
+      }
+    }).connect(drumCompressor);
+
+    // Snare - membrane + noise
+    const snareMembrane = new Tone.MembraneSynth({
+      pitchDecay: 0.01,
+      octaves: 4,
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.15,
+        sustain: 0,
+        release: 0.1
+      }
+    }).connect(drumCompressor);
+
+    const snareNoise = new Tone.NoiseSynth({
+      noise: { type: 'white' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.15,
+        sustain: 0,
+        release: 0.1
+      }
+    }).connect(drumCompressor);
+
+    // Hi-hats
+    const hihat = new Tone.MetalSynth({
+      frequency: 250,
+      envelope: {
+        attack: 0.001,
+        decay: 0.05,
+        release: 0.01
+      },
+      harmonicity: 5.1,
+      modulationIndex: 32,
+      resonance: 4000,
+      octaves: 1.5
+    }).connect(drumCompressor);
+
+    const openHat = new Tone.MetalSynth({
+      frequency: 250,
+      envelope: {
+        attack: 0.001,
+        decay: 0.3,
+        release: 0.1
+      },
+      harmonicity: 5.1,
+      modulationIndex: 32,
+      resonance: 4000,
+      octaves: 1.5
+    }).connect(drumCompressor);
+
+    // ==========================================
+    // MELODIC SYNTHESIZERS
+    // ==========================================
+
+    // Bass synth with filter
+    const bassFilter = new Tone.Filter({
+      frequency: 800,
+      type: 'lowpass',
+      rolloff: -24
+    }).connect(masterReverb);
+
+    const bass = new Tone.MonoSynth({
+      oscillator: { type: 'sawtooth' },
+      envelope: {
+        attack: 0.01,
+        decay: 0.3,
+        sustain: 0.4,
+        release: 0.2
+      },
+      filterEnvelope: {
+        attack: 0.01,
+        decay: 0.2,
+        sustain: 0.3,
+        release: 0.2,
+        baseFrequency: 200,
+        octaves: 2.5
+      }
+    }).connect(bassFilter);
+    bass.volume.value = -8;
+
+    // Pad synth
+    const padReverb = new Tone.Reverb({ decay: 3, wet: 0.5 }).connect(masterCompressor);
+    const padFilter = new Tone.Filter({
+      frequency: 2000,
+      type: 'lowpass'
+    }).connect(padReverb);
+
+    const pad = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.8,
+        decay: 0.5,
+        sustain: 0.8,
+        release: 2
+      }
+    }).connect(padFilter);
+    pad.volume.value = -18;
+
+    // ==========================================
+    // TEXTURE - Vinyl crackle
+    // ==========================================
+
+    const vinylNoise = new Tone.Noise('brown').connect(masterCompressor);
+    vinylNoise.volume.value = -35;
+
+    // ==========================================
+    // PATTERN SYSTEM
+    // ==========================================
+
+    // Base patterns (Amen break inspired)
+    let kickPattern = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+    let snarePattern = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+    let hihatPattern = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    let openHatPattern = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1];
+    let bassPattern = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0];
+
+    // Ghost note velocities (0-1)
+    let kickVelocities = kickPattern.map(v => v ? 0.9 + Math.random() * 0.1 : 0);
+    let snareVelocities = snarePattern.map(v => v ? 0.85 + Math.random() * 0.15 : 0);
+
+    // Probability-based pattern variations
+    function shouldHit(probability) {
+      return Math.random() < probability;
+    }
+
+    function getVelocity(base, variance) {
+      return Math.min(1, Math.max(0.1, base + (Math.random() * variance * 2 - variance)));
+    }
+
+    // Pattern mutation
+    function mutatePattern(intensity) {
+      const mutations = {
+        subtle: 0.15,
+        moderate: 0.3,
+        major: 0.5
+      };
+
+      const chance = mutations[intensity] || 0.1;
+
+      // Mutate kick (keep strong beats mostly intact)
+      kickPattern = kickPattern.map((v, i) => {
+        if (i === 0) return 1; // Always keep downbeat
+        if (shouldHit(chance)) {
+          return shouldHit(0.6) ? 1 : 0;
+        }
+        return v;
+      });
+
+      // Mutate snare (keep 2 and 4 mostly intact)
+      snarePattern = snarePattern.map((v, i) => {
+        if (i === 4 || i === 12) return 1; // Keep backbeat
+        if (shouldHit(chance)) {
+          return shouldHit(0.4) ? 1 : 0;
+        }
+        return v;
+      });
+
+      // Add ghost notes
+      snareVelocities = snarePattern.map((v, i) => {
+        if (v) return 0.85 + Math.random() * 0.15;
+        // Chance of ghost note
+        if (shouldHit(0.15)) return 0.25 + Math.random() * 0.15;
+        return 0;
+      });
+
+      // Mutate hi-hats
+      hihatPattern = hihatPattern.map((v, i) => {
+        if (shouldHit(chance * 0.5)) {
+          return shouldHit(0.85) ? 1 : 0;
+        }
+        return v;
+      });
+
+      // Mutate open hats
+      openHatPattern = openHatPattern.map((v, i) => {
+        if (shouldHit(chance * 0.3)) {
+          return shouldHit(0.2) ? 1 : 0;
+        }
+        return v;
+      });
+
+      // Mutate bass
+      bassPattern = bassPattern.map((v, i) => {
+        if (i === 0) return 1; // Keep downbeat
+        if (shouldHit(chance * 0.4)) {
+          return shouldHit(0.5) ? 1 : 0;
+        }
+        return v;
+      });
+
+      kickVelocities = kickPattern.map(v => v ? getVelocity(0.85, 0.1) : 0);
+
+      patternVersion++;
+      document.getElementById('patternValue').textContent = patternVersion;
+    }
+
+    // Stutter effect
+    let stutterActive = false;
+    function triggerStutter(time) {
+      if (shouldHit(0.05) && !stutterActive) { // 5% chance per bar
+        stutterActive = true;
+        const stutterCount = Math.floor(Math.random() * 4) + 2;
+        for (let i = 0; i < stutterCount; i++) {
+          const stutterTime = time + (i * 0.05);
+          kick.triggerAttackRelease('C1', '32n', stutterTime, 0.7);
+        }
+        setTimeout(() => { stutterActive = false; }, 500);
+      }
+    }
+
+    // ==========================================
+    // MAIN SEQUENCER
+    // ==========================================
+
+    const sequence = new Tone.Sequence((time, step) => {
+      sixteenthCount = step;
+
+      // Bar tracking
+      if (step === 0) {
+        barCount++;
+
+        // Update UI
+        Tone.Draw.schedule(() => {
+          let evolutionState = 'Stable';
+          if (barCount % 32 === 0) evolutionState = 'Major shift!';
+          else if (barCount % 16 === 0) evolutionState = 'Evolving...';
+          else if (barCount % 4 === 0) evolutionState = 'Subtle change';
+          document.getElementById('barCounter').textContent =
+            `Bar: ${barCount} | Evolution: ${evolutionState}`;
+        }, time);
+
+        // Pattern evolution
+        if (barCount % 4 === 0) mutatePattern('subtle');
+        if (barCount % 16 === 0) mutatePattern('moderate');
+        if (barCount % 32 === 0) mutatePattern('major');
+
+        // Chord changes (every 4 bars)
+        if (barCount % 4 === 0) {
+          currentChordIndex = (currentChordIndex + 1) % chordProgression.length;
+          const chord = chordProgression[currentChordIndex];
+
+          Tone.Draw.schedule(() => {
+            document.getElementById('chordDisplay').textContent = chord.name;
+          }, time);
+
+          // Update WebGPU particle colors
+          if (webgpuParticles) {
+            webgpuParticles.setChordHue(chord.hue);
+          }
+
+          // Play pad chord
+          pad.triggerAttackRelease(chord.notes, '2n', time);
+        }
+
+        // Occasional stutter
+        triggerStutter(time);
+      }
+
+      // Kick
+      if (kickPattern[step] && kickVelocities[step] > 0) {
+        kick.triggerAttackRelease('C1', '8n', time, kickVelocities[step]);
+
+        // Duck bass on kick
+        bassFilter.frequency.setValueAtTime(400, time);
+        bassFilter.frequency.linearRampToValueAtTime(800, time + 0.1);
+      }
+
+      // Snare (including ghost notes)
+      if (snareVelocities[step] > 0) {
+        const vel = snareVelocities[step];
+        snareMembrane.triggerAttackRelease('G3', '16n', time, vel * 0.5);
+        snareNoise.triggerAttackRelease('16n', time, vel);
+      }
+
+      // Hi-hat
+      if (hihatPattern[step] && !openHatPattern[step]) {
+        const hatVel = getVelocity(0.4, 0.15);
+        hihat.triggerAttackRelease('16n', time, hatVel);
+      }
+
+      // Open hat
+      if (openHatPattern[step]) {
+        openHat.triggerAttackRelease('8n', time, 0.5);
+      }
+
+      // Bass
+      if (bassPattern[step]) {
+        const chord = chordProgression[currentChordIndex];
+        const bassNote = chord.bass;
+        // Syncopated bass with occasional octave jump
+        const octaveUp = shouldHit(0.15);
+        const note = octaveUp ? bassNote.replace('1', '2') : bassNote;
+        bass.triggerAttackRelease(note, '8n', time, 0.8);
+      }
+
+    }, [...Array(16).keys()], '16n');
+
+    // ==========================================
+    // WEBGPU RENDER LOOP + AUDIO ANALYSIS
+    // ==========================================
+
+    let webgpuParticles = null;
+    let lastFrameTime = performance.now();
+
+    function analyzeAudio() {
+      const fftData = analyser.getValue();
+      const waveformData = waveformAnalyser.getValue();
+
+      // Calculate max for each band without creating temporary arrays
+      let bassMax = -Infinity;
+      for (let i = 0; i < 10; i++) {
+        if (fftData[i] > bassMax) bassMax = fftData[i];
+      }
+
+      let midMax = -Infinity;
+      for (let i = 10; i < 50; i++) {
+        if (fftData[i] > midMax) midMax = fftData[i];
+      }
+
+      let highMax = -Infinity;
+      for (let i = 50; i < 120; i++) {
+        if (fftData[i] > highMax) highMax = fftData[i];
+      }
+
+      // Calculate energy per band (normalize from dB)
+      const bass = Math.max(0, Math.min(1, (bassMax + 100) / 100));
+      const mid = Math.max(0, Math.min(1, (midMax + 100) / 100));
+      const high = Math.max(0, Math.min(1, (highMax + 100) / 100));
+
+      // Overall amplitude from waveform (without creating new array)
+      let ampMax = 0;
+      for (let i = 0; i < waveformData.length; i++) {
+        const absVal = Math.abs(waveformData[i]);
+        if (absVal > ampMax) ampMax = absVal;
+      }
+
+      return { bass, mid, high, amplitude: ampMax };
+    }
+
+    function renderLoop() {
+      if (!isPlaying || !webgpuParticles) {
+        requestAnimationFrame(renderLoop);
+        return;
+      }
+
+      const now = performance.now();
+      const deltaTime = (now - lastFrameTime) / 1000;
+      lastFrameTime = now;
+
+      // Analyze audio
+      const audioData = analyzeAudio();
+      webgpuParticles.updateAudioData(
+        audioData.bass,
+        audioData.mid,
+        audioData.high,
+        audioData.amplitude
+      );
+
+      // Render particles
+      webgpuParticles.render(deltaTime);
+
+      requestAnimationFrame(renderLoop);
+    }
+
+    // ==========================================
+    // UI CONTROLS
+    // ==========================================
+
+    const startBtn = document.getElementById('startBtn');
+    const controls = document.getElementById('controls');
+    const barCounter = document.getElementById('barCounter');
+    const chordDisplay = document.getElementById('chordDisplay');
+    const bpmSlider = document.getElementById('bpmSlider');
+    const bpmValue = document.getElementById('bpmValue');
+
+    // Initialize WebGPU
+    (async () => {
+      webgpuParticles = new WebGPUParticles();
+      await webgpuParticles.init();
+      renderLoop();
+    })();
+
+    startBtn.addEventListener('click', async () => {
+      await Tone.start();
+
+      if (isPlaying) {
+        // Stop
+        Tone.Transport.stop();
+        sequence.stop();
+        vinylNoise.stop();
+        pad.releaseAll();
+        startBtn.textContent = 'Start';
+        startBtn.classList.remove('playing');
+        isPlaying = false;
+      } else {
+        // Start
+        Tone.Transport.bpm.value = parseInt(bpmSlider.value);
+        Tone.Transport.swing = 0.05;
+        Tone.Transport.start();
+        sequence.start(0);
+        vinylNoise.start();
+
+        // Initial pad chord
+        const chord = chordProgression[currentChordIndex];
+        pad.triggerAttackRelease(chord.notes, '2n');
+        if (webgpuParticles) {
+          webgpuParticles.setChordHue(chord.hue);
+        }
+
+        startBtn.textContent = 'Stop';
+        startBtn.classList.add('playing');
+        controls.classList.add('visible');
+        barCounter.classList.add('visible');
+        chordDisplay.classList.add('visible');
+        isPlaying = true;
+        lastFrameTime = performance.now();
+      }
+    });
+
+    bpmSlider.addEventListener('input', (e) => {
+      const bpm = parseInt(e.target.value);
+      Tone.Transport.bpm.value = bpm;
+      bpmValue.textContent = bpm;
+    });
+  </script>
+</body>
+</html>
